@@ -1,0 +1,18 @@
+{
+  "add_bos_token": false,
+  "add_eos_token": false,
+  "add_prefix_space": false,
+  "additional_special_tokens": ["<|im_start|>", "<|im_end|>", "<fim_prefix>", "<fim_middle>", "<fim_suffix>", "<fim_pad>"],
+  "bos_token": "<|endoftext|>",
+  "clean_up_tokenization_spaces": false,
+  "eos_token": "<|endoftext|>",
+  "legacy": false,
+  "model_max_length": 1000000000000000019884624838656,
+  "pad_token": "<fim_pad>",
+  "sp_model_kwargs": {},
+  "spaces_between_special_tokens": false,
+  "tokenizer_class": "PreTrainedTokenizerFast",
+  "unk_token": "<unk>",
+  "use_default_system_prompt": false,
+  "add_prefix_space": true
+}
