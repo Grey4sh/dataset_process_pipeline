@@ -17,7 +17,7 @@ import re
 import subprocess
 import json
 from collections import defaultdict
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # 要跳过的文件夹后缀列表
@@ -242,37 +242,40 @@ class CmwDataset:
 
         repo_files = {}
 
-        for component in tqdm(os.listdir(root)):
-            component_path = os.path.join(root, component)
-            if os.path.isdir(component_path):
-                # 遍历 /src/sbin 和 /src/kernel 目录
-                for folder in ["sbin", "kernel"]:
-                    target_dir = os.path.join(component_path, f"src/{folder}")
-                    if os.path.exists(target_dir):
-                        for dirpath, dirnames, filenames in os.walk(target_dir):
-                            # 过滤出需要跳过的目录
-                            dirnames[:] = [d for d in dirnames if not should_skip_dir(os.path.join(dirpath, d))]
-                            # 计算repo名称
-                            for dirname in tqdm(list(dirnames)):  # 使用list复制，防止修改dirnames
-                                repo_name = f"{trunk_name}-{component}-{folder}-{dirname}"
-                                repo_path = os.path.join(dirpath, dirname)
-                                if repo_name not in repo_files:
-                                    repo_files[repo_name] = []
-                                # 收集并排序repo中的文件
-                                sorted_files = self.collect_files(repo_path)
-                                for filename, file_path in sorted_files:
-                                    content, token_num = self.get_content(file_path)
-                                    if self.bigfile_filter:
-                                        if token_num > 100000:
-                                            continue
-                                    repo_files[repo_name].append({
-                                        "file_name": filename,
-                                        "content": content,
-                                        "token_num": token_num
-                                    })
-                            # 清空dirnames以避免进入更深层次的子目录
-                            dirnames[:] = []
+        with ThreadPoolExecutor() as executor:
+            future_to_repo = {}
+            for component in tqdm(os.listdir(root)):
+                component_path = os.path.join(root, component)
+                if os.path.isdir(component_path):
+                    for folder in ["sbin", "kernel"]:
+                        target_dir = os.path.join(component_path, f"src/{folder}")
+                        if os.path.exists(target_dir):
+                            for dirpath, dirnames, filenames in os.walk(target_dir):
+                                dirnames[:] = [d for d in dirnames if not should_skip_dir(os.path.join(dirpath, d))]
+                                for dirname in dirnames:
+                                    repo_name = f"{trunk_name}-{component}-{folder}-{dirname}"
+                                    repo_path = os.path.join(dirpath, dirname)
+                                    future_to_repo[executor.submit(self.process_repo, repo_name, repo_path)] = repo_name
 
+            for future in tqdm(as_completed(future_to_repo), total=len(future_to_repo)):
+                repo_name = future_to_repo[future]
+                repo_files[repo_name] = future.result()
+
+        return repo_files
+
+    def process_repo(self, repo_name, repo_path):
+        repo_files = []
+        sorted_files = self.collect_files(repo_path)
+        for filename, file_path in sorted_files:
+            content, token_num = self.get_content(file_path)
+            if self.bigfile_filter:
+                if token_num > 100000:
+                    continue
+            repo_files.append({
+                "file_name": filename,
+                "content": content,
+                "token_num": token_num
+            })
         return repo_files
 
     def get_content(self, file_path: str):
@@ -321,9 +324,9 @@ class CmwDatasetFim:
         self.middle_token = "<fim_middle>"
         self.repo_token = "<reponame>"
         self.file_token = "<file_sep>"
-        self.max_span_len = 100  # fim_middle的最大长度
+        self.max_span_len = 256  # fim_middle的最大长度
         self.min_span_len = 3  # fim_middle的最小长度
-        self.min_file_len = 150  # 进行FIM处理的最小文件长度
+        self.min_file_len = 200  # 进行FIM处理的最小文件长度
         self.np_rng = np.random.RandomState(seed=seed)  # rng state for FIM
         self.cmw_dataset_output_path = cmw_dataset_output_path
 
@@ -462,13 +465,16 @@ def permute(sample, np_rng, fim_spm_rate, suffix_tok=None,
     middle = sample[prefix_length:prefix_length + middle_length]
     suffix = sample[prefix_length + middle_length:]
 
-    if np_rng.binomial(1, fim_spm_rate):
-        # SPM (variant 2 from FIM paper)
-        new_sample = prefix_tok + suffix_tok + suffix + middle_tok + prefix + middle + eos_tok
+    # pure SPM
+    new_sample = prefix_tok + suffix_tok + suffix + middle_tok + prefix + middle + eos_tok
 
-    else:
-        # PSM
-        new_sample = prefix_tok + prefix + suffix_tok + suffix + middle_tok + middle + eos_tok
+    # if np_rng.binomial(1, fim_spm_rate):
+    #     # SPM (variant 2 from FIM paper)
+    #     new_sample = prefix_tok + suffix_tok + suffix + middle_tok + prefix + middle + eos_tok
+    #
+    # else:
+    #     # PSM
+    #     new_sample = prefix_tok + prefix + suffix_tok + suffix + middle_tok + middle + eos_tok
 
     return new_sample
 
