@@ -199,13 +199,19 @@ class CmwDataset:
             for component in tqdm(os.listdir(root)):
                 component_path = os.path.join(root, component)
                 if os.path.isdir(component_path):
-                    # 直接处理最后一级目录，不再根据特定子目录区分
+                    # 直接处理第一层包含源文件的目录
                     for dirpath, dirnames, filenames in os.walk(component_path):
+                        # 过滤掉需要跳过的目录
                         dirnames[:] = [d for d in dirnames if not should_skip_dir(os.path.join(dirpath, d))]
-                        for dirname in dirnames:
-                            repo_path = os.path.join(dirpath, dirname)
-                            # repo_name 直接使用最后一级目录的路径
-                            repo_name = dirname
+
+                        # 检查当前目录是否包含源文件（C、JAVA文件）
+                        has_source_files = any(f.endswith(('.c', '.h', '.java')) for f in filenames)
+
+                        # 如果当前目录包含源文件，将其作为repo
+                        if has_source_files:
+                            repo_name = os.path.basename(dirpath)  # 使用当前目录作为repo名称
+                            repo_path = dirpath
+                            # 提交任务
                             future_to_repo[executor.submit(self.process_repo, repo_name, repo_path)] = repo_name
 
             # 等待所有任务完成并收集结果

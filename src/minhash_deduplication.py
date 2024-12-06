@@ -265,7 +265,6 @@ if __name__ == "__main__":
             data_files=data_dir,
             split=split,
             cache_dir=cache_dir,
-            use_auth_token=True,
             num_proc=os.cpu_count()
         )
 
