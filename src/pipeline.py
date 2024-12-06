@@ -22,17 +22,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 要跳过的文件夹后缀列表
 skip_suffixes = ["/grpcplugin", "/resource", "/webplugin", "/verifysuite"]
-# 所有可能的 trunk 名称
-trunk_names = ['v9', 'b75', 'b70', 'b64']
 
 
 def arg_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dir_name", help="待处理项目路径", default=None)
     parser.add_argument("--bigfile_filter", help="是否对大文件进行剔除", default=False)
+    parser.add_argument("--project_language", help="项目语言选择", default="c")
     parser.add_argument("--fim_rate", help="The rate of FIM", default=0.5)
     parser.add_argument("--fim_spm_rate", help="The rate of SPM", default=0.5)
-    parser.add_argument("--seq_length", help="The sequence length", default=8192)
+    parser.add_argument("--seq_length", help="The sequence length", default=4096)
     parser.add_argument("--seed", help="seed number", default=42)
     parser.add_argument("--tokenizer_path", help="The path to the tokenizer", default="codeqwen_tokenizer")
     parser.add_argument("--cmw_dataset_output_path", help="The path to the output dataset",
@@ -40,7 +39,7 @@ def arg_parser():
     return parser.parse_args()
 
 
-# 去除函数头，文件头以及修改信息注释
+# 去除Comware风格函数头，文件头以及修改信息注释
 def remove_extra_comment(code_string: str):
     # Define regex patterns for multiline comments
     main_pattern = r'/\*{1,2}[\s\S]*?\*/'  # 匹配多行函数头&文件头注释
@@ -132,14 +131,6 @@ def get_json_data(file_path):
     return data
 
 
-def get_trunk_name(path):
-    """从路径中精确提取trunk名称"""
-    for name in trunk_names:
-        if os.path.basename(os.path.normpath(path)) == name:
-            return name
-    return "unknown"
-
-
 def should_skip_dir(dir_path):
     """检查目录路径是否以任何一个指定的后缀结尾，如果是则返回 True"""
     for suffix in skip_suffixes:
@@ -148,115 +139,76 @@ def should_skip_dir(dir_path):
     return False
 
 
-def simplify_comment(code_string: str):
-    comment_pattern = re.compile(r'/\*{1,2}[\s\S]*?\*/', re.DOTALL)
-    field_patterns = {
-        'Func Name': r'Func Name:\s*(.*?)(?=\n\s*[A-Z]|$)',
-        'Description': r'Description:\s*((?:.|\n)*?)(?=\n\s*Input:)',
-        'Input': r'Input:\s*((?:.|\n)*?)(?=\n\s*Output:)',
-        'Output': r'Output:\s*((?:.|\n)*?)(?=\n\s*Return:)',
-        'Return': r'Return:\s*(.*?)(?=\n\s*Caution|$)',
-    }
-
-    def process_comment_block(comment_block):
-        if comment_block.count('\n') <= 5:
-            return comment_block
-        if "Func Name:" in comment_block:
-            new_comment = "/*\n"
-            for key, pattern in field_patterns.items():
-                match = re.search(pattern, comment_block, re.DOTALL)
-                if match and match.group(1).strip():
-                    # Remove excess spaces from the matched content
-                    content = ' '.join(match.group(1).strip().splitlines())
-                    content = re.sub(r'\s+', ' ', content)  # Replace multiple spaces with a single space
-                else:
-                    content = ''
-                new_comment += f"{key}: {content}\n"
-            new_comment += "*/\n"
-            return new_comment
-        return ""
-
-    new_code_string = re.sub(comment_pattern, lambda match: process_comment_block(match.group(0)), code_string)
-    return new_code_string
-
-
 class CmwDataset:
-    def __init__(self, dir_name, tokenizer_path, bigfile_filter):
+    def __init__(self, dir_name, tokenizer_path, bigfile_filter, language):
         self.dir_name = dir_name
         self.tokenizer_path = tokenizer_path
         self.bigfile_filter = bigfile_filter
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
         self.unexpected_encoder_num = 0
+        self.language = language
 
-    @staticmethod
-    def collect_files(repo_path):
-        """收集repo中的.c和.h文件，并按要求排序"""
-        include_files = []
-        lib_files = []
-        other_files = []
+    def collect_files(self, repo_path):
+        """收集repo中的.c和.h文件，并按要求排序；对于Java，直接返回所有文件"""
+        all_files = []
 
+        # 遍历目录
         for dirpath, dirnames, filenames in os.walk(repo_path):
             # 过滤出需要跳过的目录
             dirnames[:] = [d for d in dirnames if not should_skip_dir(os.path.join(dirpath, d))]
 
             for filename in filenames:
-                if filename.endswith('.c') or filename.endswith('.h'):
+                if filename.endswith('.c') or filename.endswith('.h') or filename.endswith('.java'):
                     file_path = os.path.join(dirpath, filename)
+                    all_files.append((filename, file_path))
 
-                    if '/include/' in dirpath or dirpath.endswith('/include'):
-                        include_files.append((filename, file_path))
-                    elif '/lib/' in dirpath or dirpath.endswith('/lib'):
-                        lib_files.append((filename, file_path))
-                    else:
-                        other_files.append((filename, file_path))
+        if 'c' == self.language:
+            # 对C语言的文件进行排序（.c 和 .h 文件）
+            def sort_files(file_list):
+                file_dict = {}
+                for filename, file_path in file_list:
+                    base_name, ext = os.path.splitext(filename)
+                    if base_name not in file_dict:
+                        file_dict[base_name] = []
+                    file_dict[base_name].append((filename, file_path))
 
-        def sort_files(file_list):
-            file_dict = {}
-            for filename, file_path in file_list:
-                base_name, ext = os.path.splitext(filename)
-                if base_name not in file_dict:
-                    file_dict[base_name] = []
-                file_dict[base_name].append((filename, file_path))
+                sorted_list = []
+                for base_name in sorted(file_dict.keys()):
+                    matched_files = sorted(file_dict[base_name], key=lambda x: x[0].endswith('.h'), reverse=True)
+                    sorted_list.extend(matched_files)
+                return sorted_list
 
-            sorted_list = []
-            for base_name in sorted(file_dict.keys()):
-                matched_files = sorted(file_dict[base_name], key=lambda x: x[0].endswith('.h'), reverse=True)
-                sorted_list.extend(matched_files)
-            return sorted_list
+            # 对C语言文件进行排序
+            sorted_files = sort_files(all_files)
 
-        # 排序各个部分的文件
-        sorted_include_files = sort_files(include_files)
-        sorted_lib_files = sort_files(lib_files)
-        sorted_other_files = sort_files(other_files)
+        elif 'java' == self.language:
+            # 对Java语言，直接返回所有文件，不进行排序
+            sorted_files = all_files
 
-        # 合并所有文件列表
-        sorted_files = sorted_include_files + sorted_lib_files + sorted_other_files
+        else:
+            # 如果不是C或JAVA，返回空列表或其他处理方式
+            raise "only support 'c' or 'java'"
 
         return sorted_files
 
     def traverse_and_collect(self):
         root = self.dir_name
-        trunk_name = get_trunk_name(root)
-        if trunk_name == "unknown":
-            raise Exception("待处理项目路径中不包含trunk目录")
-
         repo_files = {}
-
         with ThreadPoolExecutor() as executor:
             future_to_repo = {}
             for component in tqdm(os.listdir(root)):
                 component_path = os.path.join(root, component)
                 if os.path.isdir(component_path):
-                    for folder in ["sbin", "kernel"]:
-                        target_dir = os.path.join(component_path, f"src/{folder}")
-                        if os.path.exists(target_dir):
-                            for dirpath, dirnames, filenames in os.walk(target_dir):
-                                dirnames[:] = [d for d in dirnames if not should_skip_dir(os.path.join(dirpath, d))]
-                                for dirname in dirnames:
-                                    repo_name = f"{trunk_name}-{component}-{folder}-{dirname}"
-                                    repo_path = os.path.join(dirpath, dirname)
-                                    future_to_repo[executor.submit(self.process_repo, repo_name, repo_path)] = repo_name
+                    # 直接处理最后一级目录，不再根据特定子目录区分
+                    for dirpath, dirnames, filenames in os.walk(component_path):
+                        dirnames[:] = [d for d in dirnames if not should_skip_dir(os.path.join(dirpath, d))]
+                        for dirname in dirnames:
+                            repo_path = os.path.join(dirpath, dirname)
+                            # repo_name 直接使用最后一级目录的路径
+                            repo_name = dirname
+                            future_to_repo[executor.submit(self.process_repo, repo_name, repo_path)] = repo_name
 
+            # 等待所有任务完成并收集结果
             for future in tqdm(as_completed(future_to_repo), total=len(future_to_repo)):
                 repo_name = future_to_repo[future]
                 repo_files[repo_name] = future.result()
@@ -322,7 +274,7 @@ class CmwDatasetFim:
         self.prefix_token = "<fim_prefix>"
         self.suffix_token = "<fim_suffix>"
         self.middle_token = "<fim_middle>"
-        self.repo_token = "<reponame>"
+        self.repo_token = "<repo_name>"
         self.file_token = "<file_sep>"
         self.max_span_len = 256  # fim_middle的最大长度
         self.min_span_len = 3  # fim_middle的最小长度
@@ -517,7 +469,7 @@ args = arg_parser()
 
 
 def run_stage1():
-    stage1 = CmwDataset(args.dir_name, args.tokenizer_path, args.bigfile_filter)
+    stage1 = CmwDataset(args.dir_name, args.tokenizer_path, args.bigfile_filter, args.project_language)
     # stage1 dataset in Nested Dict format
     stage1_dataset_ND = stage1.traverse_and_collect()
     print("stage1 dataset has been generated.")
