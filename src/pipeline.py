@@ -424,15 +424,15 @@ def permute(sample, np_rng, fim_spm_rate, suffix_tok=None,
     suffix = sample[prefix_length + middle_length:]
 
     # pure SPM
-    new_sample = prefix_tok + suffix_tok + suffix + middle_tok + prefix + middle + eos_tok
+    # new_sample = prefix_tok + suffix_tok + suffix + middle_tok + prefix + middle + eos_tok
 
-    # if np_rng.binomial(1, fim_spm_rate):
-    #     # SPM (variant 2 from FIM paper)
-    #     new_sample = prefix_tok + suffix_tok + suffix + middle_tok + prefix + middle + eos_tok
-    #
-    # else:
-    #     # PSM
-    #     new_sample = prefix_tok + prefix + suffix_tok + suffix + middle_tok + middle + eos_tok
+    if np_rng.binomial(1, fim_spm_rate):
+        # SPM (variant 2 from FIM paper)
+        new_sample = prefix_tok + suffix_tok + suffix + middle_tok + prefix + middle + eos_tok
+
+    else:
+        # PSM
+        new_sample = prefix_tok + prefix + suffix_tok + suffix + middle_tok + middle + eos_tok
 
     return new_sample
 
